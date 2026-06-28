@@ -48,6 +48,8 @@
 #include "cs_nis.h"
 #include "cs_nis_fp16.h"
 #include "cs_rgb_to_nv12.h"
+#include "cs_anime4k_2x_cnn_l.h"
+#include "cs_anime4k_2x_cnn_vl.h"
 #include "cs_anime4k_2x_cnn_ul.h"
 
 #define A_CPU
@@ -313,7 +315,7 @@ bool CVulkanDevice::BInit(VkInstance instance, VkSurfaceKHR surface)
 		return false;
 	if (!createShaders())
 		return false;
-	if (!createAnime4kULPipelines())
+	if (!createAnime4kPipelines())
 		return false;
 	if (!createScratchResources())
 		return false;
@@ -976,6 +978,8 @@ bool CVulkanDevice::createShaders()
 		SHADER(NIS, cs_nis);
 	}
 	SHADER(RGB_TO_NV12, cs_rgb_to_nv12);
+	SHADER(ANIME4K_2X_CNN_L, cs_anime4k_2x_cnn_l);
+	SHADER(ANIME4K_2X_CNN_VL, cs_anime4k_2x_cnn_vl);
 	SHADER(ANIME4K_2X_CNN_UL, cs_anime4k_2x_cnn_ul);
 #undef SHADER
 
@@ -998,7 +1002,23 @@ bool CVulkanDevice::createShaders()
 	return true;
 }
 
-bool CVulkanDevice::createAnime4kULPipelines()
+VkPipeline CVulkanDevice::anime4kPipeline(GamescopeUpscaleFilter eFilter, uint32_t pass)
+{
+	assert(pass < 9);
+
+	switch (eFilter)
+	{
+		case GamescopeUpscaleFilter::ANIME4K_2X_CNN_L:
+			return m_anime4kLPipelines[pass];
+		case GamescopeUpscaleFilter::ANIME4K_2X_CNN_VL:
+			return m_anime4kVLPipelines[pass];
+		case GamescopeUpscaleFilter::ANIME4K_2X_CNN_UL:
+		default:
+			return m_anime4kULPipelines[pass];
+	}
+}
+
+bool CVulkanDevice::createAnime4kPipelines()
 {
 	VkSpecializationMapEntry passEntry = {
 		.constantID = 8,
@@ -1006,30 +1026,45 @@ bool CVulkanDevice::createAnime4kULPipelines()
 		.size = sizeof(uint32_t)
 	};
 
-	for (uint32_t pass = 0; pass < 9; pass++) {
-		VkSpecializationInfo specInfo = {
-			.mapEntryCount = 1,
-			.pMapEntries = &passEntry,
-			.dataSize = sizeof(uint32_t),
-			.pData = &pass
-		};
+	struct Anime4kPipelineSet_t
+	{
+		ShaderType shaderType;
+		VkPipeline *pipelines;
+		const char *name;
+	};
 
-		VkComputePipelineCreateInfo pipelineInfo = {
-			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			.stage = {
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-				.module = m_shaderModules[SHADER_TYPE_ANIME4K_2X_CNN_UL],
-				.pName = "main",
-				.pSpecializationInfo = &specInfo
-			},
-			.layout = m_pipelineLayout
-		};
+	Anime4kPipelineSet_t pipelineSets[] = {
+		{ SHADER_TYPE_ANIME4K_2X_CNN_L, m_anime4kLPipelines, "Anime4K L" },
+		{ SHADER_TYPE_ANIME4K_2X_CNN_VL, m_anime4kVLPipelines, "Anime4K VL" },
+		{ SHADER_TYPE_ANIME4K_2X_CNN_UL, m_anime4kULPipelines, "Anime4K UL" },
+	};
 
-		VkResult res = vk.CreateComputePipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_anime4kULPipelines[pass]);
-		if (res != VK_SUCCESS) {
-			vk_errorf(res, "vkCreateComputePipelines failed for Anime4K UL pass %u", pass);
-			return false;
+	for (const auto& pipelineSet : pipelineSets) {
+		for (uint32_t pass = 0; pass < 9; pass++) {
+			VkSpecializationInfo specInfo = {
+				.mapEntryCount = 1,
+				.pMapEntries = &passEntry,
+				.dataSize = sizeof(uint32_t),
+				.pData = &pass
+			};
+
+			VkComputePipelineCreateInfo pipelineInfo = {
+				.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+				.stage = {
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+					.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+					.module = m_shaderModules[pipelineSet.shaderType],
+					.pName = "main",
+					.pSpecializationInfo = &specInfo
+				},
+				.layout = m_pipelineLayout
+			};
+
+			VkResult res = vk.CreateComputePipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipelineSet.pipelines[pass]);
+			if (res != VK_SUCCESS) {
+				vk_errorf(res, "vkCreateComputePipelines failed for %s pass %u", pipelineSet.name, pass);
+				return false;
+			}
 		}
 	}
 
@@ -1235,7 +1270,7 @@ void CVulkanDevice::compileAllPipelines()
 {
 	pthread_setname_np( pthread_self(), "gamescope-shdr" );
 
-	std::array<PipelineInfo_t, SHADER_TYPE_COUNT> pipelineInfos;
+	std::array<PipelineInfo_t, SHADER_TYPE_RGB_TO_NV12 + 1> pipelineInfos;
 #define SHADER(type, layer_count, max_ycbcr, blur_layers) pipelineInfos[SHADER_TYPE_##type] = {SHADER_TYPE_##type, layer_count, max_ycbcr, blur_layers}
 	SHADER(BLIT, k_nMaxLayers, k_nMaxYcbcrMask_ToPreCompile, 1);
 	SHADER(BLUR, k_nMaxLayers, k_nMaxYcbcrMask_ToPreCompile, k_nMaxBlurLayers);
@@ -1661,6 +1696,17 @@ void CVulkanCmdBuffer::bindTarget(gamescope::Rc<CVulkanTexture> target)
 		m_textureRefs.emplace_back(std::move(target));
 }
 
+void CVulkanCmdBuffer::bindTargets(gamescope::Rc<CVulkanTexture> target0, gamescope::Rc<CVulkanTexture> target1)
+{
+	m_targets[0] = target0.get();
+	m_targets[1] = target1.get();
+	m_targetCount = 2;
+	if (target0)
+		m_textureRefs.emplace_back(std::move(target0));
+	if (target1)
+		m_textureRefs.emplace_back(std::move(target1));
+}
+
 void CVulkanCmdBuffer::bindTargets(gamescope::Rc<CVulkanTexture> target0, gamescope::Rc<CVulkanTexture> target1, gamescope::Rc<CVulkanTexture> target2)
 {
 	m_targets[0] = target0.get();
@@ -1849,21 +1895,26 @@ void CVulkanCmdBuffer::dispatch(uint32_t x, uint32_t y, uint32_t z)
 		lut3DDescriptor[i].imageView = m_lut3D[i] ? m_lut3D[i]->srgbView() : VK_NULL_HANDLE;
 	}
 
-	if (m_targetCount == 1 && m_targets[0]->isYcbcr())
+	bool targetIsYcbcr = m_targetCount == 1 && m_targets[0]->isYcbcr();
+	if (targetIsYcbcr)
 	{
 		targetDescriptors[0].imageView = m_targets[0]->lumaView();
 		targetDescriptors[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 		targetDescriptors[1].imageView = m_targets[0]->chromaView();
 		targetDescriptors[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+		targetDescriptors[2].imageView = m_targets[0]->lumaView();
+		targetDescriptors[2].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	}
 	else
 	{
-		for (uint32_t i = 0; i < m_targetCount; i++)
+		for (uint32_t i = 0; i < targetDescriptors.size(); i++)
 		{
-			if (m_targets[i])
+			CVulkanTexture *target = i < m_targetCount && m_targets[i] ? m_targets[i] : m_targets[0];
+			if (target)
 			{
-				targetDescriptors[i].imageView = m_targets[i]->srgbView();
+				targetDescriptors[i].imageView = target->srgbView();
 				targetDescriptors[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 			}
 		}
@@ -3570,8 +3621,30 @@ static void update_tmp_images( uint32_t width, uint32_t height )
 }
 
 
-// TODO: Free the textures when anime4k UL is not used anymore
-static void update_anime4k_ul_buffers(uint32_t width, uint32_t height, uint32_t outWidth, uint32_t outHeight)
+struct Anime4kModelInfo_t
+{
+	uint32_t featureTextures;
+	uint32_t layerCount;
+	uint32_t lastInputFirstLayer;
+	uint32_t lastInputLayerCount;
+};
+
+static Anime4kModelInfo_t anime4k_model_info(GamescopeUpscaleFilter eFilter)
+{
+	switch (eFilter)
+	{
+		case GamescopeUpscaleFilter::ANIME4K_2X_CNN_L:
+			return { 2, 3, 2, 1 };
+		case GamescopeUpscaleFilter::ANIME4K_2X_CNN_VL:
+			return { 2, 7, 0, 7 };
+		case GamescopeUpscaleFilter::ANIME4K_2X_CNN_UL:
+		default:
+			return { 3, 7, 2, 5 };
+	}
+}
+
+// TODO: Free the textures when anime4k is not used anymore
+static void update_anime4k_buffers(uint32_t width, uint32_t height, uint32_t outWidth, uint32_t outHeight)
 {
     if (g_output.anime4kULLayers[0][0] != nullptr
         && g_output.anime4kULLayers[0][0]->width() == width
@@ -3584,12 +3657,13 @@ static void update_anime4k_ul_buffers(uint32_t width, uint32_t height, uint32_t 
     createFlags.bSampled = true;
     createFlags.bStorage = true;
 
+    // ponytail: allocate the max Anime4K shape once; split per model only if memory pressure shows up.
     for (int layer = 0; layer < 7; layer++) {
         for (int tex = 0; tex < 3; tex++) {
             g_output.anime4kULLayers[layer][tex] = new CVulkanTexture();
             if (!g_output.anime4kULLayers[layer][tex]->BInit(width, height, 1u, DRM_FORMAT_ABGR16161616F, createFlags, nullptr))
             {
-                vk_log.errorf("failed to create anime4k UL layer[%d][%d] buffer", layer, tex);
+                vk_log.errorf("failed to create anime4k layer[%d][%d] buffer", layer, tex);
                 return;
             }
         }
@@ -3599,7 +3673,7 @@ static void update_anime4k_ul_buffers(uint32_t width, uint32_t height, uint32_t 
         g_output.anime4kULLast[tex] = new CVulkanTexture();
         if (!g_output.anime4kULLast[tex]->BInit(width, height, 1u, DRM_FORMAT_ABGR16161616F, createFlags, nullptr))
         {
-            vk_log.errorf("failed to create anime4k UL last[%d] buffer", tex);
+            vk_log.errorf("failed to create anime4k last[%d] buffer", tex);
             return;
         }
     }
@@ -3607,7 +3681,7 @@ static void update_anime4k_ul_buffers(uint32_t width, uint32_t height, uint32_t 
     g_output.anime4kULOut = new CVulkanTexture();
     if (!g_output.anime4kULOut->BInit(outWidth, outHeight, 1u, DRM_FORMAT_ARGB8888, createFlags, nullptr))
     {
-        vk_log.errorf("failed to create anime4k UL output buffer");
+        vk_log.errorf("failed to create anime4k output buffer");
         return;
     }
 }
@@ -4257,20 +4331,29 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 
 		cmdBuffer->dispatch(div_roundup(currentOutputWidth, pixelsPerGroup), div_roundup(currentOutputHeight, pixelsPerGroup));
 	}
-	else if ( frameInfo->useAnime4k2xCnnULLayer0 )
+	else if ( frameInfo->useAnime4k2xCnnLayer0 )
 	{
+		GamescopeUpscaleFilter anime4kFilter = IsAnime4kUpscaleFilter(g_upscaleFilter) ? g_upscaleFilter : GamescopeUpscaleFilter::ANIME4K_2X_CNN_UL;
+		Anime4kModelInfo_t modelInfo = anime4k_model_info(anime4kFilter);
+
 		uint32_t inputX = frameInfo->layers[0].tex->width();
 		uint32_t inputY = frameInfo->layers[0].tex->height();
 
 		uint32_t outX = inputX * 2;
 		uint32_t outY = inputY * 2;
 
-		update_anime4k_ul_buffers(inputX, inputY, outX, outY);
+		update_anime4k_buffers(inputX, inputY, outX, outY);
 
 		const int pixelsPerGroup = 8;
+		auto bindAnime4kLayerTargets = [&](uint32_t layer) {
+			if (modelInfo.featureTextures == 2)
+				cmdBuffer->bindTargets(g_output.anime4kULLayers[layer][0], g_output.anime4kULLayers[layer][1]);
+			else
+				cmdBuffer->bindTargets(g_output.anime4kULLayers[layer][0], g_output.anime4kULLayers[layer][1], g_output.anime4kULLayers[layer][2]);
+		};
 
-		cmdBuffer->bindPipeline(g_device.anime4kULPipeline(0));
-		cmdBuffer->bindTargets(g_output.anime4kULLayers[0][0], g_output.anime4kULLayers[0][1], g_output.anime4kULLayers[0][2]);
+		cmdBuffer->bindPipeline(g_device.anime4kPipeline(anime4kFilter, 0));
+		bindAnime4kLayerTargets(0);
 		cmdBuffer->bindTexture(0, frameInfo->layers[0].tex);
 		cmdBuffer->setTextureSrgb(0, true);
 		cmdBuffer->setSamplerUnnormalized(0, false);
@@ -4278,12 +4361,11 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		cmdBuffer->uploadConstants<Anime4kPushData_t>(inputX, inputY, inputX, inputY);
 		cmdBuffer->dispatch(div_roundup(inputX, pixelsPerGroup), div_roundup(inputY, pixelsPerGroup));
 
-		for (int layer = 1; layer <= 6; layer++) {
-			int passIdx = layer;
-			cmdBuffer->bindPipeline(g_device.anime4kULPipeline(passIdx));
-			cmdBuffer->bindTargets(g_output.anime4kULLayers[layer][0], g_output.anime4kULLayers[layer][1], g_output.anime4kULLayers[layer][2]);
+		for (uint32_t layer = 1; layer < modelInfo.layerCount; layer++) {
+			cmdBuffer->bindPipeline(g_device.anime4kPipeline(anime4kFilter, layer));
+			bindAnime4kLayerTargets(layer);
 			
-			for (int t = 0; t < 3; t++) {
+			for (uint32_t t = 0; t < modelInfo.featureTextures; t++) {
 				cmdBuffer->bindTexture(t, g_output.anime4kULLayers[layer - 1][t]);
 				cmdBuffer->setTextureSrgb(t, false);
 				cmdBuffer->setSamplerUnnormalized(t, false);
@@ -4293,12 +4375,12 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 			cmdBuffer->dispatch(div_roundup(inputX, pixelsPerGroup), div_roundup(inputY, pixelsPerGroup));
 		}
 
-		cmdBuffer->bindPipeline(g_device.anime4kULPipeline(7));
+		cmdBuffer->bindPipeline(g_device.anime4kPipeline(anime4kFilter, 7));
 		cmdBuffer->bindTargets(g_output.anime4kULLast[0], g_output.anime4kULLast[1], g_output.anime4kULLast[2]);
 		
-		int texIdx = 0;
-		for (int layer = 2; layer <= 6; layer++) {
-			for (int t = 0; t < 3; t++) {
+		uint32_t texIdx = 0;
+		for (uint32_t layer = modelInfo.lastInputFirstLayer; layer < modelInfo.lastInputFirstLayer + modelInfo.lastInputLayerCount; layer++) {
+			for (uint32_t t = 0; t < modelInfo.featureTextures; t++) {
 				cmdBuffer->bindTexture(texIdx, g_output.anime4kULLayers[layer][t]);
 				cmdBuffer->setTextureSrgb(texIdx, false);
 				cmdBuffer->setSamplerUnnormalized(texIdx, false);
@@ -4309,10 +4391,10 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		cmdBuffer->uploadConstants<Anime4kPushData_t>(inputX, inputY, inputX, inputY);
 		cmdBuffer->dispatch(div_roundup(inputX, pixelsPerGroup), div_roundup(inputY, pixelsPerGroup));
 
-		cmdBuffer->bindPipeline(g_device.anime4kULPipeline(8));
+		cmdBuffer->bindPipeline(g_device.anime4kPipeline(anime4kFilter, 8));
 		cmdBuffer->bindTarget(g_output.anime4kULOut);
 
-		for (int t = 0; t < 3; t++) {
+		for (uint32_t t = 0; t < 3; t++) {
 			cmdBuffer->bindTexture(t, g_output.anime4kULLast[t]);
 			cmdBuffer->setTextureSrgb(t, false);
 			cmdBuffer->setSamplerUnnormalized(t, false);

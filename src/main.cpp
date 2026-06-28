@@ -174,10 +174,12 @@ const char usage[] =
 	"  -r, --nested-refresh           game refresh rate (frames per second)\n"
 	"  -m, --max-scale                maximum scale factor\n"
 	"  -S, --scaler                   upscaler type (auto, integer, fit, fill, stretch)\n"
-	"  -F, --filter                   upscaler filter (linear, nearest, fsr, nis, pixel, anime4k)\n"
+	"  -F, --filter                   upscaler filter (linear, nearest, fsr, nis, pixel, anime4k, anime4k-ul, anime4k-l, anime4k-vl)\n"
 	"                                     fsr => AMD FidelityFX™ Super Resolution 1.0\n"
 	"                                     nis => NVIDIA Image Scaling v1.0.3\n"
-	"                                     anime4k => Anime4K 2x CNN UL upscaling\n"
+	"                                     anime4k, anime4k-ul => Anime4K 2x CNN UL upscaling\n"
+	"                                     anime4k-l => Anime4K 2x CNN L upscaling\n"
+	"                                     anime4k-vl => Anime4K 2x CNN VL upscaling\n"
 	"  --sharpness, --fsr-sharpness   upscaler sharpness from 0 (max) to 20 (min)\n"
 	"  --expose-wayland               support wayland clients using xdg-shell\n"
 	"  -s, --mouse-sensitivity        multiply mouse movement by given decimal number\n"
@@ -414,8 +416,12 @@ static enum GamescopeUpscaleFilter parse_upscaler_filter(const char *str)
 		return GamescopeUpscaleFilter::NIS;
 	} else if (strcmp(str, "pixel") == 0) {
 		return GamescopeUpscaleFilter::PIXEL;
-	} else if (strcmp(str, "anime4k") == 0) {
+	} else if (strcmp(str, "anime4k") == 0 || strcmp(str, "anime4k-ul") == 0) {
 		return GamescopeUpscaleFilter::ANIME4K_2X_CNN_UL;
+	} else if (strcmp(str, "anime4k-l") == 0) {
+		return GamescopeUpscaleFilter::ANIME4K_2X_CNN_L;
+	} else if (strcmp(str, "anime4k-vl") == 0) {
+		return GamescopeUpscaleFilter::ANIME4K_2X_CNN_VL;
 	} else {
 		fprintf( stderr, "gamescope: invalid value for --filter\n" );
 		exit(1);

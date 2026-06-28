@@ -37,8 +37,17 @@ enum class GamescopeUpscaleFilter : uint32_t
     NIS,
     PIXEL,
     ANIME4K_2X_CNN_UL,
+    ANIME4K_2X_CNN_L,
+    ANIME4K_2X_CNN_VL,
     FROM_VIEW = 0xF, // internal
 };
+
+static constexpr bool IsAnime4kUpscaleFilter( GamescopeUpscaleFilter eFilter )
+{
+    return eFilter == GamescopeUpscaleFilter::ANIME4K_2X_CNN_UL
+        || eFilter == GamescopeUpscaleFilter::ANIME4K_2X_CNN_L
+        || eFilter == GamescopeUpscaleFilter::ANIME4K_2X_CNN_VL;
+}
 
 static constexpr bool DoesHardwareSupportUpscaleFilter( GamescopeUpscaleFilter eFilter )
 {
@@ -73,4 +82,3 @@ extern bool g_bNoTouchPointerEmulation;
 
 extern uint32_t g_preferVendorID;
 extern uint32_t g_preferDeviceID;
-

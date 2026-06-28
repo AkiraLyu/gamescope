@@ -3546,7 +3546,7 @@ namespace gamescope
 			bNeedsFullComposite |= bWasFirstFrame;
 			bNeedsFullComposite |= pFrameInfo->useFSRLayer0;
 			bNeedsFullComposite |= pFrameInfo->useNISLayer0;
-			bNeedsFullComposite |= pFrameInfo->useAnime4k2xCnnULLayer0;
+			bNeedsFullComposite |= pFrameInfo->useAnime4k2xCnnLayer0;
 			bNeedsFullComposite |= pFrameInfo->blurLayer0;
 			bNeedsFullComposite |= bNeedsCompositeFromFilter;
 			bNeedsFullComposite |= !k_bUseCursorPlane && bDrewCursor;
@@ -4103,4 +4103,3 @@ int HackyDRMPresent( const FrameInfo_t *pFrameInfo, bool bAsync )
 {
 	return static_cast<gamescope::CDRMBackend *>( GetBackend() )->Present( pFrameInfo, bAsync );
 }
-
